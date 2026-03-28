@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PIO: Build",
+      "type": "shell",
+      "command": "C:/Users/arpit/.platformio/penv/Scripts/platformio.exe",
+      "args": ["run"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Build FS",
+      "type": "shell",
+      "command": "C:/Users/arpit/.platformio/penv/Scripts/platformio.exe",
+      "args": ["run", "--target", "buildfs"],
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Upload FS",
+      "type": "shell",
+      "command": "C:/Users/arpit/.platformio/penv/Scripts/platformio.exe",
+      "args": ["run", "--target", "uploadfs"],
+      "problemMatcher": []
+    },
+    {
+      "label": "PIO: Upload Firmware",
+      "type": "shell",
+      "command": "C:/Users/arpit/.platformio/penv/Scripts/platformio.exe",
+      "args": ["run", "--target", "upload"],
+      "problemMatcher": []
+    }
+  ]
+}
