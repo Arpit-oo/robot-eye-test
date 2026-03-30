@@ -7,12 +7,15 @@
 
 TFT_eSPI tft = TFT_eSPI();
 AnimatedGIF gif;
+static constexpr uint16_t kBackgroundColor = TFT_WHITE;
 
-static uint16_t g_line_buffer[240];
+static uint16_t g_line_buffer[320];
 static int16_t gifX = 0;
 static int16_t gifY = 0;
 static int16_t gifW = 0;
 static int16_t gifH = 0;
+static int16_t gifSrcW = 0;
+static int16_t gifSrcH = 0;
 static bool g_gif_open = false;
 static size_t g_current_gif_index = 0;
 static bool g_runtime_display_test = false;
@@ -48,51 +51,85 @@ static void clear_current_gif_canvas() {
   if (gifW <= 0 || gifH <= 0) {
     return;
   }
-  tft.fillRect(gifX, gifY, gifW, gifH, TFT_BLACK);
+  tft.fillRect(gifX, gifY, gifW, gifH, kBackgroundColor);
 }
 
 static void gif_draw(GIFDRAW *p_draw) {
-  int16_t x = p_draw->iX;
-  int16_t y = p_draw->iY + p_draw->y;
-  int16_t draw_x = x + gifX;
-  int16_t draw_y = y + gifY;
-  int16_t w = p_draw->iWidth;
+  if (gifSrcW <= 0 || gifSrcH <= 0 || gifW <= 0 || gifH <= 0) {
+    return;
+  }
 
-  if (draw_y < 0 || draw_y >= tft.height() || draw_x >= tft.width()) {
+  const int16_t srcY = p_draw->iY + p_draw->y;
+  const int16_t srcX0 = p_draw->iX;
+  const int16_t srcX1 = p_draw->iX + p_draw->iWidth;
+  if (srcY < 0 || srcY >= gifSrcH || srcX0 >= srcX1) {
     return;
   }
-  if (draw_x < 0) {
+
+  int16_t dstY0 = (srcY * gifH) / gifSrcH;
+  int16_t dstY1 = ((srcY + 1) * gifH) / gifSrcH;
+  if (dstY1 <= dstY0) dstY1 = dstY0 + 1;
+
+  int16_t dstX0 = (srcX0 * gifW) / gifSrcW;
+  int16_t dstX1 = (srcX1 * gifW) / gifSrcW;
+  if (dstX1 <= dstX0) dstX1 = dstX0 + 1;
+
+  int16_t drawX = gifX + dstX0;
+  int16_t drawW = dstX1 - dstX0;
+  int16_t drawY0 = gifY + dstY0;
+  int16_t drawY1 = gifY + dstY1;
+
+  if (drawW <= 0 || drawY1 <= 0 || drawY0 >= tft.height()) {
     return;
   }
-  if ((draw_x + w) > tft.width()) {
-    w = tft.width() - draw_x;
+
+  // Clip horizontally to avoid writing outside display bounds.
+  int16_t clipLeft = 0;
+  if (drawX < 0) {
+    clipLeft = -drawX;
+    drawW -= clipLeft;
+    drawX = 0;
   }
-  if (w <= 0) {
+  if ((drawX + drawW) > tft.width()) {
+    drawW = tft.width() - drawX;
+  }
+  if (drawW <= 0) {
     return;
   }
 
   uint8_t *src = p_draw->pPixels;
   uint16_t *palette = p_draw->pPalette;
 
-  if (p_draw->ucHasTransparency) {
-    const uint8_t transparent = p_draw->ucTransparent;
-    // Build a full destination line to avoid flashing from line-by-line clears.
-    for (int i = 0; i < w; i++) {
-      g_line_buffer[i] = TFT_BLACK;
-    }
+  for (int16_t xo = 0; xo < drawW; xo++) {
+    const int32_t numer = static_cast<int32_t>(xo + clipLeft) * p_draw->iWidth;
+    int16_t srcIndex = static_cast<int16_t>(numer / (dstX1 - dstX0));
+    if (srcIndex < 0) srcIndex = 0;
+    if (srcIndex >= p_draw->iWidth) srcIndex = p_draw->iWidth - 1;
 
-    for (int i = 0; i < w; i++) {
-      const uint8_t pix = src[i];
-      if (pix != transparent) {
-        g_line_buffer[i] = palette[pix];
-      }
+    const uint8_t pix = src[srcIndex];
+    g_line_buffer[xo] = kBackgroundColor;
+    if (!p_draw->ucHasTransparency || pix != p_draw->ucTransparent) {
+      g_line_buffer[xo] = palette[pix];
     }
-    tft.pushImage(draw_x, draw_y, w, 1, g_line_buffer);
-  } else {
-    for (int i = 0; i < w; i++) {
-      g_line_buffer[i] = palette[src[i]];
+  }
+
+  // Replace GIF background color with TFT_WHITE for seamless blending
+  // Only replaces exact background palette index, never touches animation colors
+  uint8_t bgIndex = p_draw->ucBackground;
+  for (int x = 0; x < drawW; x++) {
+    const int32_t numer = static_cast<int32_t>(x + clipLeft) * p_draw->iWidth;
+    int16_t srcIndex = static_cast<int16_t>(numer / (dstX1 - dstX0));
+    if (srcIndex < 0) srcIndex = 0;
+    if (srcIndex >= p_draw->iWidth) srcIndex = p_draw->iWidth - 1;
+    if (p_draw->pPixels[srcIndex] == bgIndex) {
+      g_line_buffer[x] = TFT_WHITE;
     }
-    tft.pushImage(draw_x, draw_y, w, 1, g_line_buffer);
+  }
+
+  for (int16_t yOut = drawY0; yOut < drawY1; yOut++) {
+    if (yOut >= 0 && yOut < tft.height()) {
+      tft.pushImage(drawX, yOut, drawW, 1, g_line_buffer);
+    }
   }
 }
 
@@ -113,13 +150,22 @@ static bool open_current_gif() {
   const int16_t canvas_w = gif.getCanvasWidth();
   const int16_t canvas_h = gif.getCanvasHeight();
 
-  gifX = (screen_w - canvas_w) / 2;
-  gifY = (screen_h - canvas_h) / 2;
+  gifSrcW = canvas_w;
+  gifSrcH = canvas_h;
+
+  const float scale_x = static_cast<float>(screen_w) / static_cast<float>(canvas_w);
+  const float scale_y = static_cast<float>(screen_h) / static_cast<float>(canvas_h);
+  const float scale = (scale_x < scale_y) ? scale_x : scale_y;
+  const int16_t scaled_w = static_cast<int16_t>(canvas_w * scale + 0.5f);
+  const int16_t scaled_h = static_cast<int16_t>(canvas_h * scale + 0.5f);
+
+  gifX = (screen_w - scaled_w) / 2;
+  gifY = (screen_h - scaled_h) / 2;
   if (gifX < 0) gifX = 0;
   if (gifY < 0) gifY = 0;
 
-  gifW = canvas_w;
-  gifH = canvas_h;
+  gifW = scaled_w;
+  gifH = scaled_h;
   if ((gifX + gifW) > screen_w) {
     gifW = screen_w - gifX;
   }
@@ -128,7 +174,7 @@ static bool open_current_gif() {
   }
 
   clear_current_gif_canvas();
-  Serial.printf("Playing %s at (%d,%d), canvas=%dx%d\n", item.name, gifX, gifY, canvas_w, canvas_h);
+  Serial.printf("Playing %s at (%d,%d), canvas=%dx%d scaled=%dx%d\n", item.name, gifX, gifY, canvas_w, canvas_h, gifW, gifH);
   g_gif_open = true;
   return true;
 }
@@ -144,27 +190,14 @@ static bool open_next_available_gif() {
 }
 
 static void transition_to_next_gif() {
-  gif.close();
-  g_gif_open = false;
-  delay(50);
-  tft.fillScreen(TFT_BLACK);
-  delay(50);
-  drawDebugGrid();
-  delay(50);
-
-  gifX = 0;
-  gifY = 0;
-  gifW = 0;
-  gifH = 0;
-
-  reset_gif_state();
-  g_current_gif_index = (g_current_gif_index + 1) % kGifCount;
+  // Reset decoder to frame 0 for seamless replay of the same open GIF.
+  gif.reset();
 }
 
 static void init_display_hardware() {
   tft.init();
   tft.invertDisplay(true);
-  tft.setRotation(2);
+  tft.setRotation(1);
 }
 
 static void startDisplaySmokeTest() {
@@ -195,9 +228,7 @@ void setup() {
   delay(250);
 
   init_display_hardware();
-  tft.fillScreen(TFT_BLACK);
-  drawDebugGrid();
-  delay(2000);
+  tft.fillScreen(kBackgroundColor);
 
   gif.begin(LITTLE_ENDIAN_PIXELS);
 
@@ -235,8 +266,7 @@ void loop() {
     return;
   }
 
-  if (frame_delay_ms < 5) frame_delay_ms = 5;
-  if (frame_delay_ms > 60) frame_delay_ms = 60;
+  if (frame_delay_ms < 1) frame_delay_ms = 1;
   delay(frame_delay_ms);
 }
 
