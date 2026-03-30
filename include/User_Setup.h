@@ -1,7 +1,9 @@
+#ifndef USER_SETUP_LOADED
+#define USER_SETUP_LOADED
+#endif
+
 #define USER_SETUP_ID 42
 #define ILI9341_2_DRIVER
-#define TFT_WIDTH  240
-#define TFT_HEIGHT 320
 #define TFT_MISO 19
 #define TFT_MOSI 23
 #define TFT_SCLK 18
@@ -20,3 +22,4 @@
 #define SPI_FREQUENCY  40000000
 #define SPI_READ_FREQUENCY  16000000
 #define TFT_INVERT_ON_START
+#define TFT_DISPLAY_MADCTL 0x68

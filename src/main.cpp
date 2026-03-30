@@ -2,9 +2,8 @@
 #include <TFT_eSPI.h>
 #include <AnimatedGIF.h>
 
-#include "catsitt.h"
-#include "doggif1.h"
-#include "collarcatgif.h"
+#include "display_test.h"
+#include "eyes.h"
 
 TFT_eSPI tft = TFT_eSPI();
 AnimatedGIF gif;
@@ -16,6 +15,7 @@ static int16_t gifW = 0;
 static int16_t gifH = 0;
 static bool g_gif_open = false;
 static size_t g_current_gif_index = 0;
+static bool g_runtime_display_test = false;
 
 struct EmbeddedGif {
   const char *name;
@@ -24,14 +24,11 @@ struct EmbeddedGif {
 };
 
 static constexpr EmbeddedGif kGifPlaylist[] = {
-  {"catsitt.gif", catsitt_gif, catsitt_gif_len},
-  {"doggif1.gif", doggif1_gif, doggif1_gif_len},
-  {"collarcatgif.gif", collarcatgif_gif, collarcatgif_gif_len},
+  {"eyes.gif", eyes_gif, eyes_gif_len},
 };
 static constexpr size_t kGifCount = sizeof(kGifPlaylist) / sizeof(kGifPlaylist[0]);
 
 static void drawDebugGrid() {
-  // Keep a persistent reference grid around animations.
   for (int x = 0; x < 240; x += 20) {
     tft.drawFastVLine(x, 0, 320, TFT_DARKGREY);
   }
@@ -51,7 +48,6 @@ static void clear_current_gif_canvas() {
   if (gifW <= 0 || gifH <= 0) {
     return;
   }
-  // Only clear the active GIF canvas region, leaving the grid visible elsewhere.
   tft.fillRect(gifX, gifY, gifW, gifH, TFT_BLACK);
 }
 
@@ -75,37 +71,23 @@ static void gif_draw(GIFDRAW *p_draw) {
     return;
   }
 
-  // Clear each destination line before drawing so pixels from previous GIFs
-  // cannot bleed through transparent regions.
-  tft.fillRect(x + gifX, y + gifY, w, 1, TFT_BLACK);
-
   uint8_t *src = p_draw->pPixels;
   uint16_t *palette = p_draw->pPalette;
 
   if (p_draw->ucHasTransparency) {
     const uint8_t transparent = p_draw->ucTransparent;
-    int run_start = -1;
-    int run_len = 0;
+    // Build a full destination line to avoid flashing from line-by-line clears.
+    for (int i = 0; i < w; i++) {
+      g_line_buffer[i] = TFT_BLACK;
+    }
 
     for (int i = 0; i < w; i++) {
       const uint8_t pix = src[i];
-      if (pix == transparent) {
-        if (run_len > 0) {
-          tft.pushImage(draw_x + run_start, draw_y, run_len, 1, g_line_buffer);
-          run_len = 0;
-          run_start = -1;
-        }
-      } else {
-        if (run_start < 0) {
-          run_start = i;
-        }
-        g_line_buffer[run_len++] = palette[pix];
+      if (pix != transparent) {
+        g_line_buffer[i] = palette[pix];
       }
     }
-
-    if (run_len > 0) {
-      tft.pushImage(draw_x + run_start, draw_y, run_len, 1, g_line_buffer);
-    }
+    tft.pushImage(draw_x, draw_y, w, 1, g_line_buffer);
   } else {
     for (int i = 0; i < w; i++) {
       g_line_buffer[i] = palette[src[i]];
@@ -131,7 +113,6 @@ static bool open_current_gif() {
   const int16_t canvas_w = gif.getCanvasWidth();
   const int16_t canvas_h = gif.getCanvasHeight();
 
-  // Center each GIF on the 240x320 panel.
   gifX = (screen_w - canvas_w) / 2;
   gifY = (screen_h - canvas_h) / 2;
   if (gifX < 0) gifX = 0;
@@ -180,32 +161,40 @@ static void transition_to_next_gif() {
   g_current_gif_index = (g_current_gif_index + 1) % kGifCount;
 }
 
+static void init_display_hardware() {
+  tft.init();
+  tft.invertDisplay(true);
+  tft.setRotation(2);
+}
+
+static void startDisplaySmokeTest() {
+  gif.close();
+  g_gif_open = false;
+  g_runtime_display_test = true;
+  DisplayTest::begin(tft);
+}
+
+#ifdef DISPLAY_SMOKE_TEST
+
 void setup() {
   Serial.begin(115200);
   delay(250);
 
-  tft.init();
-  tft.setAddrWindow(0, 0, 239, 319);
-  // Force MADCTL register to standard portrait mapping for clone ILI9341 panels
-  tft.writecommand(0x36);
-  tft.writedata(0x48);
-  tft.setRotation(1);
+  init_display_hardware();
+  DisplayTest::begin(tft);
+}
 
-  // Explicit GRAM window fix for clone ILI9341 panels.
-  tft.startWrite();
-  tft.writecommand(0x2A); // Column address set
-  tft.writedata(0x00);
-  tft.writedata(0x00);
-  tft.writedata(0x00);
-  tft.writedata(0xEF); // 239
+void loop() {
+  DisplayTest::tick(tft);
+}
 
-  tft.writecommand(0x2B); // Row address set
-  tft.writedata(0x00);
-  tft.writedata(0x00);
-  tft.writedata(0x01);
-  tft.writedata(0x3F); // 319
-  tft.endWrite();
+#else
 
+void setup() {
+  Serial.begin(115200);
+  delay(250);
+
+  init_display_hardware();
   tft.fillScreen(TFT_BLACK);
   drawDebugGrid();
   delay(2000);
@@ -216,18 +205,29 @@ void setup() {
     Serial.println("Initial GIF open failed; loop() will retry");
   }
 
-  Serial.println("3-GIF centered playlist started");
+  Serial.println("Eyes GIF playback started");
+  Serial.println("Send 't' in Serial Monitor to start display smoke test mode");
 }
 
 void loop() {
+  while (Serial.available() > 0) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == 't' || c == 'T') {
+      startDisplaySmokeTest();
+    }
+  }
+
+  if (g_runtime_display_test) {
+    DisplayTest::tick(tft);
+    return;
+  }
+
   if (!g_gif_open) {
     if (!open_next_available_gif()) {
       delay(250);
       return;
     }
   }
-
-  clear_current_gif_canvas();
 
   int frame_delay_ms = 0;
   if (!gif.playFrame(false, &frame_delay_ms)) {
@@ -239,3 +239,5 @@ void loop() {
   if (frame_delay_ms > 60) frame_delay_ms = 60;
   delay(frame_delay_ms);
 }
+
+#endif
